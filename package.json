@@ -1,0 +1,24 @@
+{
+  "name": "urip-smart-contracts",
+  "version": "1.0.0",
+  "description": "URIP dApps Smart Contracts for tokenizing traditional assets",
+  "scripts": {
+    "install-deps": "forge install OpenZeppelin/openzeppelin-contracts && forge install foundry-rs/forge-std",
+    "build": "forge build",
+    "test": "forge test -vvv",
+    "test-gas": "forge test --gas-report",
+    "deploy-local": "forge script script/DeployURIP.s.sol:DeployURIP --rpc-url http://localhost:8545 --broadcast",
+    "deploy-lisk": "forge script script/DeployURIP.s.sol:DeployURIP --rpc-url $LISK_RPC_URL --broadcast --verify",
+    "verify": "forge verify-contract --chain-id 4202 --watch",
+    "clean": "forge clean"
+  },
+  "keywords": [
+    "defi",
+    "tokenization",
+    "smart-contracts",
+    "lisk",
+    "foundry"
+  ],
+  "author": "URIP Team",
+  "license": "MIT"
+}
