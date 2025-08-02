@@ -1,0 +1,17 @@
+{
+    "MockUSDT": "0x787b5e45f1def0a126d2c93d39822e0a24bbc074",
+    "Stocks": {
+        "tMSFT": "0x7a346368cb82bca986e16d91fa1846f3e2f2f081",
+        "tAAPL": "0xdf1a0e84ad813a178cdcf6fdfec1876f78bb471d",
+        "tGOOG": "0x067556d409d112376a5c68cde223fdae3a4bd62b",
+        "tD05": "0x2ba5a6aa9fd6cf52b30ccb2fddefd505b34f0eb9",
+        "tBREN": "0x751d67bcbfa63acc27e6a6514fbeb27365d3dd38",
+        "tDELTA": "0x616a76c281f2f805499ae46a6c7c3a6a3a62cdc0",
+        "tMAYBANK": "0x04d1edf5252c35d3c1f7e6a5f934b6ab12f66220",
+        "tXAU": "0xf80567a323c99c99086d0d6884d7b03aff5c8903",
+        "tXAG": "0xa2f75a99ea1133f72673ddbbbe01a0080e5c6e52",
+        "tBTC": "0x8049cd4055b32e810efad90e998bbe82a58d5ab9"
+    },
+    "URIP": "0x3aa72870440488c55310ebfccdccd751da331da5",
+    "PurchaseManager": "0x177d6da3c6e37ff9b9e63fe5305d0b25ea341f98"
+}

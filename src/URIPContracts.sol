@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 // ============================================================================
 // 1. ASSET TOKEN CONTRACT (untuk individual stocks/commodities)
@@ -96,13 +97,13 @@ contract AssetToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
         _unpause();
     }
 
-    // Override required functions
-    function _beforeTokenTransfer(
+    // Override _update function for OpenZeppelin v5.x compatibility
+    function _update(
         address from,
         address to,
-        uint256 amount
+        uint256 value
     ) internal override whenNotPaused {
-        super._beforeTokenTransfer(from, to, amount);
+        super._update(from, to, value);
     }
 }
 
@@ -255,6 +256,15 @@ contract URIPToken is ERC20, AccessControl, Pausable, ReentrancyGuard {
 
     function unpause() public onlyRole(PAUSER_ROLE) {
         _unpause();
+    }
+
+    // Override _update function for OpenZeppelin v5.x compatibility
+    function _update(
+        address from,
+        address to,
+        uint256 value
+    ) internal override whenNotPaused {
+        super._update(from, to, value);
     }
 }
 

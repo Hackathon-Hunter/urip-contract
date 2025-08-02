@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 // ============================================================================
 // MOCK USDT DENGAN FAUCET (untuk testing)
@@ -21,12 +21,7 @@ contract MockUSDT is IERC20 {
     uint256 public faucetAmount = 1000 * 1e6; // 1000 USDT
     uint256 public faucetCooldown = 24 hours;
 
-    event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(
-        address indexed owner,
-        address indexed spender,
-        uint256 value
-    );
+    // Only declare events that are NOT in IERC20
     event FaucetClaim(address indexed user, uint256 amount);
 
     constructor() {
