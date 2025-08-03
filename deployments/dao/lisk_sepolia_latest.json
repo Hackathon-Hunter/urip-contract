@@ -1,0 +1,36 @@
+{
+  "network": "lisk_sepolia",
+  "chainId": "4202",
+  "timestamp": "2025-08-03T11:04:28+07:00",
+  "gasPrice": "1000000000",
+  "deployer": "0xDB891b112678e3C6eF021a19DB85c7BBD461e114",
+  "rpcUrl": "https://rpc.sepolia-api.lisk.com",
+  "explorerUrl": "https://sepolia-blockscout.lisk.com",
+  "logFile": "logs/dao_deployment_lisk_sepolia_20250803_110427.log",
+  "existingContracts": {
+    "mockUSDT": "0x787b5e45f1def0a126d2c93d39822e0a24bbc074",
+    "uripToken": "0x3aa72870440488c55310ebfccdccd751da331da5", 
+    "purchaseManager": "0x177d6da3c6e37ff9b9e63fe5305d0b25ea341f98",
+    "assetTokens": {
+      "tMSFT": "0x7a346368cb82bca986e16d91fa1846f3e2f2f081",
+      "tAAPL": "0xdf1a0e84ad813a178cdcf6fdfec1876f78bb471d", 
+      "tGOOG": "0x067556d409d112376a5c68cde223fdae3a4bd62b",
+      "tXAU": "0xf80567a323c99c99086d0d6884d7b03aff5c8903"
+    }
+  },
+  "newContracts": {
+    "treasuryManager": "",
+    "daoGovernance": "",
+    "governanceIntegration": "",
+    "governanceHelper": ""
+  },
+  "verification": {
+    "enabled": true,
+    "status": "pending"
+  },
+  "setup": {
+    "roles_configured": true,
+    "asset_whitelist_set": true,
+    "governance_parameters_set": true
+  }
+}

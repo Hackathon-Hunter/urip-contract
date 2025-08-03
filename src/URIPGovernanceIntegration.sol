@@ -6,7 +6,10 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 
-// Import the contracts we need to interface with
+/**
+ * @title IURIPDAOGovernance
+ * @dev Interface for URIP DAO Governance
+ */
 interface IURIPDAOGovernance {
     enum ProposalCategory {
         FUND_MANAGEMENT,
@@ -24,6 +27,14 @@ interface IURIPDAOGovernance {
         bytes[] memory calldatas,
         ProposalCategory category
     ) external returns (uint256);
+
+    function castVote(
+        uint256 proposalId,
+        uint8 support,
+        string memory reason
+    ) external;
+
+    function getVotingPower(address account) external view returns (uint256);
 }
 
 interface IURIPToken {
@@ -542,168 +553,4 @@ contract URIPGovernanceIntegration is AccessControl {
     }
 }
 
-/**
- * @title URIPTreasuryManager
- * @dev Manages protocol treasury funds with governance oversight
- */
-contract URIPTreasuryManager is AccessControl, ReentrancyGuard {
-    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant TREASURER_ROLE = keccak256("TREASURER_ROLE");
 
-    IURIPDAOGovernance public immutable governance;
-
-    // Treasury allocations
-    mapping(address => uint256) public allocatedFunds; // token => amount
-    mapping(address => uint256) public spentFunds; // token => spent amount
-
-    // Budget categories
-    enum BudgetCategory {
-        DEVELOPMENT,
-        MARKETING,
-        OPERATIONS,
-        PARTNERSHIPS,
-        RESEARCH,
-        EMERGENCY_RESERVE
-    }
-
-    struct BudgetAllocation {
-        uint256 amount;
-        uint256 spent;
-        uint256 period; // Budget period in seconds
-        uint256 lastReset; // Last budget reset timestamp
-        bool active;
-    }
-
-    mapping(BudgetCategory => mapping(address => BudgetAllocation))
-        public budgets;
-
-    // Events
-    event FundsAllocated(
-        address indexed token,
-        uint256 amount,
-        BudgetCategory category
-    );
-    event FundsSpent(
-        address indexed token,
-        uint256 amount,
-        BudgetCategory category,
-        string purpose
-    );
-    event BudgetUpdated(
-        BudgetCategory category,
-        address token,
-        uint256 newAmount
-    );
-    event EmergencyWithdrawal(
-        address indexed token,
-        uint256 amount,
-        address recipient
-    );
-
-    constructor(address _governance) {
-        governance = IURIPDAOGovernance(_governance);
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(GOVERNANCE_ROLE, _governance);
-        _grantRole(TREASURER_ROLE, msg.sender);
-    }
-
-    /**
-     * @dev Allocate funds to budget categories (governance only)
-     */
-    function allocateBudget(
-        BudgetCategory category,
-        address token,
-        uint256 amount,
-        uint256 period
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        require(amount > 0, "Invalid amount");
-        require(period >= 30 days, "Period too short");
-
-        budgets[category][token] = BudgetAllocation({
-            amount: amount,
-            spent: 0,
-            period: period,
-            lastReset: block.timestamp,
-            active: true
-        });
-
-        emit BudgetUpdated(category, token, amount);
-    }
-
-    /**
-     * @dev Spend from allocated budget
-     */
-    function spendFromBudget(
-        BudgetCategory category,
-        address token,
-        uint256 amount,
-        string memory purpose,
-        address recipient
-    ) external onlyRole(TREASURER_ROLE) nonReentrant {
-        BudgetAllocation storage budget = budgets[category][token];
-        require(budget.active, "Budget not active");
-
-        // Check if budget period has expired and reset if needed
-        if (block.timestamp >= budget.lastReset + budget.period) {
-            budget.spent = 0;
-            budget.lastReset = block.timestamp;
-        }
-
-        require(budget.spent + amount <= budget.amount, "Insufficient budget");
-        require(
-            IERC20(token).balanceOf(address(this)) >= amount,
-            "Insufficient balance"
-        );
-
-        budget.spent += amount;
-        spentFunds[token] += amount;
-
-        IERC20(token).transfer(recipient, amount);
-
-        emit FundsSpent(token, amount, category, purpose);
-    }
-
-    /**
-     * @dev Emergency withdrawal (governance only)
-     */
-    function emergencyWithdraw(
-        address token,
-        uint256 amount,
-        address recipient
-    ) external onlyRole(GOVERNANCE_ROLE) nonReentrant {
-        require(recipient != address(0), "Invalid recipient");
-        require(
-            IERC20(token).balanceOf(address(this)) >= amount,
-            "Insufficient balance"
-        );
-
-        IERC20(token).transfer(recipient, amount);
-
-        emit EmergencyWithdrawal(token, amount, recipient);
-    }
-
-    /**
-     * @dev Get remaining budget for category
-     */
-    function getRemainingBudget(
-        BudgetCategory category,
-        address token
-    ) external view returns (uint256) {
-        BudgetAllocation memory budget = budgets[category][token];
-        if (!budget.active) return 0;
-
-        // Check if budget period has expired
-        if (block.timestamp >= budget.lastReset + budget.period) {
-            return budget.amount; // Budget resets
-        }
-
-        return budget.amount > budget.spent ? budget.amount - budget.spent : 0;
-    }
-
-    /**
-     * @dev Get treasury balance
-     */
-    function getTreasuryBalance(address token) external view returns (uint256) {
-        return IERC20(token).balanceOf(address(this));
-    }
-}
