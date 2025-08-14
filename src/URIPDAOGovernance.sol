@@ -1,129 +1,114 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 
-/**
- * @title IURIPDAOGovernance
- * @dev Interface for URIP DAO Governance
- */
-interface IURIPDAOGovernance {
-    enum ProposalCategory {
-        FUND_MANAGEMENT,
-        PROTOCOL_GOVERNANCE,
-        TREASURY_MANAGEMENT,
-        EMERGENCY_ACTION
-    }
-
-    function createProposal(
-        string memory title,
-        string memory description,
-        string[] memory actionDescriptions,
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        ProposalCategory category
-    ) external returns (uint256);
-
-    function castVote(
-        uint256 proposalId,
-        uint8 support,
-        string memory reason
+// Interface for URIP Token
+interface IURIPToken {
+    function balanceOf(address account) external view returns (uint256);
+    function totalSupply() external view returns (uint256);
+    function setAssetAllocation(
+        address assetToken,
+        uint256 allocationBasisPoints
     ) external;
-
-    function getVotingPower(address account) external view returns (uint256);
+    function getAllAssetAllocations()
+        external
+        view
+        returns (address[] memory assets, uint256[] memory allocations);
+    function getAssetCount() external view returns (uint256);
+    function getUnderlyingAsset(uint256 index) external view returns (address);
 }
 
 /**
  * @title URIPDAOGovernance
- * @dev Comprehensive DAO governance system for URIP platform
- * Handles fund management decisions, protocol governance, and treasury management
+ * @dev DAO governance system for URIP fund asset allocation decisions
+ *
+ * PURPOSE:
+ * - Allow URIP token holders to vote on fund rebalancing proposals
+ * - Democratic decision-making for asset allocation changes
+ * - Simple majority voting with URIP token-based voting power
+ * - Ensure community control over fund composition
+ *
+ * KEY FEATURES:
+ * 1. Rebalancing Proposals: Propose new asset allocation percentages
+ * 2. Simple Majority Voting: 51% of participating votes needed to pass
+ * 3. URIP-based Voting Power: 1 URIP token = 1 vote
+ * 4. Proposal Lifecycle: Create → Vote → Execute → Complete
+ * 5. Timelock Security: Delay between approval and execution
+ *
+ * FLOW OVERVIEW:
+ * 1. URIP holder creates rebalancing proposal
+ * 2. Community votes for 7 days
+ * 3. If majority approves, 2-day timelock begins
+ * 4. After timelock, anyone can execute the rebalancing
+ * 5. New allocations are applied to URIP fund
  */
-contract URIPDAOGovernance is
-    IURIPDAOGovernance,
-    AccessControl,
-    ReentrancyGuard,
-    Pausable
-{
+contract URIPDAOGovernance is AccessControl, ReentrancyGuard, Pausable {
     // ============================================================================
-    // CONSTANTS & ROLES
+    // ROLES & CONSTANTS
     // ============================================================================
 
-    bytes32 public constant TIMELOCK_ROLE = keccak256("TIMELOCK_ROLE");
+    bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
     bytes32 public constant EMERGENCY_ROLE = keccak256("EMERGENCY_ROLE");
 
-    uint256 public constant BASIS_POINTS = 10000;
+    // ============================================================================
+    // ENUMS & STRUCTS
+    // ============================================================================
 
     enum ProposalStatus {
-        PENDING,
-        ACTIVE,
-        SUCCEEDED,
-        DEFEATED,
-        EXECUTED,
-        CANCELLED,
-        EXPIRED
+        Active, // Currently accepting votes
+        Succeeded, // Passed, waiting for timelock
+        Defeated, // Failed to reach majority
+        Executed, // Successfully executed
+        Cancelled // Cancelled by emergency role
     }
 
-    // ============================================================================
-    // STRUCTS
-    // ============================================================================
-
-    struct ProposalConfig {
-        uint256 quorumPercentage; // Required quorum (basis points)
-        uint256 approvalThreshold; // Required approval percentage (basis points)
-        uint256 votingPeriod; // Voting duration in seconds
-        uint256 executionDelay; // Delay before execution (timelock)
-        uint256 proposalThreshold; // Min tokens to create proposal
+    struct RebalancingProposal {
+        uint256 id; // Proposal ID
+        string title; // Proposal title
+        string description; // Detailed description
+        address proposer; // Who created the proposal
+        uint256 startTime; // When voting started
+        uint256 endTime; // When voting ends
+        uint256 executionTime; // When execution is allowed (after timelock)
+        // Proposed allocations
+        address[] assetTokens; // Asset token addresses
+        uint256[] newAllocations; // New allocation percentages (basis points)
+        // Voting data
+        uint256 forVotes; // Votes in favor
+        uint256 againstVotes; // Votes against
+        uint256 totalVotingPower; // Total voting power when proposal was created
+        // Status
+        ProposalStatus status; // Current status
+        // Voting tracking
+        mapping(address => bool) hasVoted; // Track who has voted
+        mapping(address => bool) voteChoice; // Track vote choices (true = for, false = against)
     }
 
-    struct Proposal {
-        uint256 id;
-        string title;
-        string description;
-        string[] actionDescriptions; // Human-readable action descriptions
-        address[] targets; // Target contracts for execution
-        uint256[] values; // ETH values for each call
-        bytes[] calldatas; // Function call data
-        ProposalCategory category;
-        ProposalStatus status;
-        address proposer;
-        uint256 startTime;
-        uint256 endTime;
-        uint256 executionTime; // When proposal can be executed
-        uint256 forVotes;
-        uint256 againstVotes;
-        uint256 abstainVotes;
-        mapping(address => bool) hasVoted;
-        mapping(address => uint8) votes; // 0=against, 1=for, 2=abstain
-    }
-
-    struct VotingPower {
-        uint256 delegatedFrom; // Total delegated to this address
-        address delegatedTo; // Who this voter delegated to
+    struct GovernanceSettings {
+        uint256 proposalThreshold; // Minimum URIP tokens needed to create proposal
+        uint256 votingPeriod; // Voting duration in seconds (7 days)
+        uint256 timelockPeriod; // Delay before execution (2 days)
+        uint256 quorumPercentage; // Minimum participation (basis points)
+        bool requireQuorum; // Whether quorum is required
     }
 
     // ============================================================================
     // STATE VARIABLES
     // ============================================================================
 
-    IERC20 public immutable governanceToken; // URIP token
+    IURIPToken public immutable uripToken;
 
-    mapping(ProposalCategory => ProposalConfig) public proposalConfigs;
-    mapping(uint256 => Proposal) public proposals;
-    mapping(address => VotingPower) public votingPowers;
+    GovernanceSettings public settings;
 
+    mapping(uint256 => RebalancingProposal) public proposals;
     uint256 public proposalCount;
 
-    // Advisory board
-    mapping(address => bool) public advisoryBoard;
-    uint256 public advisoryBoardSize;
-
-    // Treasury management
-    address public treasuryAddress;
-    mapping(address => bool) public authorizedExecutors;
+    // Voting delegation (optional feature)
+    mapping(address => address) public delegates;
+    mapping(address => uint256) public delegatedVotes;
 
     // ============================================================================
     // EVENTS
@@ -132,85 +117,65 @@ contract URIPDAOGovernance is
     event ProposalCreated(
         uint256 indexed proposalId,
         address indexed proposer,
-        ProposalCategory category,
-        string title
+        string title,
+        address[] assetTokens,
+        uint256[] newAllocations
     );
 
     event VoteCast(
         uint256 indexed proposalId,
         address indexed voter,
-        uint8 support,
-        uint256 weight,
+        bool support,
+        uint256 votingPower,
         string reason
     );
 
-    event ProposalExecuted(uint256 indexed proposalId);
-    event ProposalCancelled(uint256 indexed proposalId);
+    event ProposalStatusChanged(
+        uint256 indexed proposalId,
+        ProposalStatus oldStatus,
+        ProposalStatus newStatus
+    );
 
-    event VotingPowerDelegated(
+    event ProposalExecuted(
+        uint256 indexed proposalId,
+        address indexed executor
+    );
+
+    event VoteDelegated(
         address indexed delegator,
         address indexed delegatee,
         uint256 amount
     );
 
-    event AdvisoryBoardUpdated(address indexed member, bool added);
-    event ProposalConfigUpdated(ProposalCategory category);
+    event GovernanceSettingsUpdated(GovernanceSettings settings);
 
     // ============================================================================
     // CONSTRUCTOR
     // ============================================================================
 
-    constructor(address _governanceToken, address _treasury) {
-        governanceToken = IERC20(_governanceToken);
-        treasuryAddress = _treasury;
+    /**
+     * @dev Initialize DAO governance with URIP token
+     * @param _uripToken Address of URIP token contract
+     *
+     * PURPOSE: Set up governance system with sensible defaults
+     * FLOW: Deploy → Set URIP token → Configure default settings → Ready for proposals
+     */
+    constructor(address _uripToken) {
+        require(_uripToken != address(0), "Invalid URIP token address");
+
+        uripToken = IURIPToken(_uripToken);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(TIMELOCK_ROLE, msg.sender);
+        _grantRole(EXECUTOR_ROLE, msg.sender);
         _grantRole(EMERGENCY_ROLE, msg.sender);
 
-        // Initialize default proposal configurations
-        _initializeProposalConfigs();
-    }
-
-    // ============================================================================
-    // PROPOSAL CONFIGURATION
-    // ============================================================================
-
-    function _initializeProposalConfigs() internal {
-        // Fund Management Proposals
-        proposalConfigs[ProposalCategory.FUND_MANAGEMENT] = ProposalConfig({
-            quorumPercentage: 1000, // 10%
-            approvalThreshold: 5100, // 51%
-            votingPeriod: 7 days,
-            executionDelay: 2 days,
-            proposalThreshold: 10000 * 1e18 // 10k URIP tokens
-        });
-
-        // Protocol Governance Proposals
-        proposalConfigs[ProposalCategory.PROTOCOL_GOVERNANCE] = ProposalConfig({
-            quorumPercentage: 1500, // 15%
-            approvalThreshold: 6000, // 60%
-            votingPeriod: 10 days,
-            executionDelay: 5 days,
-            proposalThreshold: 50000 * 1e18 // 50k URIP tokens
-        });
-
-        // Treasury Management Proposals
-        proposalConfigs[ProposalCategory.TREASURY_MANAGEMENT] = ProposalConfig({
-            quorumPercentage: 2000, // 20%
-            approvalThreshold: 6600, // 66%
-            votingPeriod: 14 days,
-            executionDelay: 7 days,
-            proposalThreshold: 100000 * 1e18 // 100k URIP tokens
-        });
-
-        // Emergency Action Proposals
-        proposalConfigs[ProposalCategory.EMERGENCY_ACTION] = ProposalConfig({
-            quorumPercentage: 2500, // 25%
-            approvalThreshold: 7500, // 75%
-            votingPeriod: 3 days,
-            executionDelay: 1 days,
-            proposalThreshold: 250000 * 1e18 // 250k URIP tokens
+        // Set default governance settings
+        settings = GovernanceSettings({
+            proposalThreshold: 1000 * 1e18, // 1,000 URIP tokens to propose
+            votingPeriod: 7 days, // 7 days to vote
+            timelockPeriod: 2 days, // 2 days before execution
+            quorumPercentage: 1000, // 10% participation required
+            requireQuorum: true // Quorum is required
         });
     }
 
@@ -218,461 +183,469 @@ contract URIPDAOGovernance is
     // PROPOSAL CREATION
     // ============================================================================
 
-    function createProposal(
-        string memory title,
-        string memory description,
-        string[] memory actionDescriptions,
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        ProposalCategory category
-    ) external override returns (uint256) {
-        require(targets.length == values.length, "Array length mismatch");
-        require(targets.length == calldatas.length, "Array length mismatch");
-        require(
-            targets.length == actionDescriptions.length,
-            "Array length mismatch"
-        );
-        require(targets.length > 0, "Empty proposal");
-
-        ProposalConfig memory config = proposalConfigs[category];
-        uint256 voterPower = getVotingPower(msg.sender);
-
-        require(
-            voterPower >= config.proposalThreshold,
-            "Insufficient voting power"
-        );
-
-        proposalCount++;
-        uint256 proposalId = proposalCount;
-
-        Proposal storage newProposal = proposals[proposalId];
-        newProposal.id = proposalId;
-        newProposal.title = title;
-        newProposal.description = description;
-        newProposal.actionDescriptions = actionDescriptions;
-        newProposal.targets = targets;
-        newProposal.values = values;
-        newProposal.calldatas = calldatas;
-        newProposal.category = category;
-        newProposal.status = ProposalStatus.ACTIVE;
-        newProposal.proposer = msg.sender;
-        newProposal.startTime = block.timestamp;
-        newProposal.endTime = block.timestamp + config.votingPeriod;
-        newProposal.executionTime = newProposal.endTime + config.executionDelay;
-
-        emit ProposalCreated(proposalId, msg.sender, category, title);
-
-        return proposalId;
-    }
-
-    // ============================================================================
-    // FUND MANAGEMENT INTEGRATION
-    // ============================================================================
-
     /**
-     * @dev Create proposal for fund rebalancing
-     * This integrates with the URIP fund management system
+     * @dev Create a new rebalancing proposal
+     * @param title Short title for the proposal
+     * @param description Detailed explanation of the rebalancing
+     * @param assetTokens Array of asset token addresses
+     * @param newAllocations Array of new allocation percentages (basis points)
+     * @return proposalId The ID of the created proposal
+     *
+     * PURPOSE: Allow URIP holders to propose fund rebalancing
+     * CALLED BY: URIP token holders with sufficient tokens
+     * FLOW:
+     * 1. Check proposer has enough URIP tokens
+     * 2. Validate proposed allocations sum to 100%
+     * 3. Create proposal with voting period
+     * 4. Community can now vote on the proposal
+     *
+     * EXAMPLE: Rebalance from 50/50 AAPL/NVDA to 60/40
+     * - title: "Increase Apple allocation to 60%"
+     * - assetTokens: [aaplToken, nvdaToken]
+     * - newAllocations: [6000, 4000] (60%, 40%)
      */
-    function createFundRebalancingProposal(
+    function createRebalancingProposal(
         string memory title,
         string memory description,
         address[] memory assetTokens,
-        uint256[] memory newAllocations,
-        address uripFundContract
-    ) external returns (uint256) {
+        uint256[] memory newAllocations
+    ) external whenNotPaused returns (uint256) {
+        require(bytes(title).length > 0, "Title cannot be empty");
+        require(assetTokens.length > 0, "Must specify at least one asset");
         require(
             assetTokens.length == newAllocations.length,
             "Array length mismatch"
         );
 
-        string[] memory actionDescriptions = new string[](assetTokens.length);
-        address[] memory targets = new address[](assetTokens.length);
-        uint256[] memory values = new uint256[](assetTokens.length);
-        bytes[] memory calldatas = new bytes[](assetTokens.length);
+        // Check proposer has enough URIP tokens
+        uint256 proposerBalance = uripToken.balanceOf(msg.sender);
+        require(
+            proposerBalance >= settings.proposalThreshold,
+            "Insufficient URIP tokens to propose"
+        );
 
-        for (uint256 i = 0; i < assetTokens.length; i++) {
-            actionDescriptions[i] = string(
-                abi.encodePacked(
-                    "Set allocation for asset to ",
-                    _toString(newAllocations[i]),
-                    " basis points"
-                )
+        // Validate allocations
+        _validateAllocations(assetTokens, newAllocations);
+
+        // Create new proposal
+        proposalCount++;
+        uint256 proposalId = proposalCount;
+
+        RebalancingProposal storage proposal = proposals[proposalId];
+        proposal.id = proposalId;
+        proposal.title = title;
+        proposal.description = description;
+        proposal.proposer = msg.sender;
+        proposal.startTime = block.timestamp;
+        proposal.endTime = block.timestamp + settings.votingPeriod;
+        proposal.executionTime = proposal.endTime + settings.timelockPeriod;
+        proposal.assetTokens = assetTokens;
+        proposal.newAllocations = newAllocations;
+        proposal.status = ProposalStatus.Active;
+        proposal.totalVotingPower = uripToken.totalSupply();
+
+        emit ProposalCreated(
+            proposalId,
+            msg.sender,
+            title,
+            assetTokens,
+            newAllocations
+        );
+
+        return proposalId;
+    }
+
+    /**
+     * @dev Validate that proposed allocations are valid
+     * @param assetTokens Array of asset token addresses
+     * @param allocations Array of allocation percentages
+     */
+    function _validateAllocations(
+        address[] memory assetTokens,
+        uint256[] memory allocations
+    ) internal pure {
+        uint256 totalAllocation = 0;
+
+        // Check each allocation is valid
+        for (uint256 i = 0; i < allocations.length; i++) {
+            require(
+                assetTokens[i] != address(0),
+                "Invalid asset token address"
             );
-            targets[i] = uripFundContract;
-            values[i] = 0;
-            calldatas[i] = abi.encodeWithSignature(
-                "setAssetAllocation(address,uint256)",
-                assetTokens[i],
-                newAllocations[i]
-            );
+            require(allocations[i] <= 10000, "Allocation cannot exceed 100%");
+            totalAllocation += allocations[i];
         }
 
-        return
-            this.createProposal(
-                title,
-                description,
-                actionDescriptions,
-                targets,
-                values,
-                calldatas,
-                ProposalCategory.FUND_MANAGEMENT
-            );
+        // Total must equal 100% (10000 basis points)
+        require(totalAllocation == 10000, "Total allocation must equal 100%");
+
+        // Check for duplicate assets
+        for (uint256 i = 0; i < assetTokens.length; i++) {
+            for (uint256 j = i + 1; j < assetTokens.length; j++) {
+                require(
+                    assetTokens[i] != assetTokens[j],
+                    "Duplicate asset token"
+                );
+            }
+        }
     }
 
     // ============================================================================
-    // VOTING
+    // VOTING SYSTEM
     // ============================================================================
 
+    /**
+     * @dev Cast a vote on a proposal
+     * @param proposalId ID of the proposal to vote on
+     * @param support True to vote for, false to vote against
+     * @param reason Optional reason for the vote
+     *
+     * PURPOSE: Allow URIP holders to vote on rebalancing proposals
+     * CALLED BY: URIP token holders during voting period
+     * FLOW:
+     * 1. Check proposal is active and in voting period
+     * 2. Check voter hasn't already voted
+     * 3. Calculate voting power (URIP balance + delegated votes)
+     * 4. Record vote and update vote counts
+     * 5. Check if proposal should be finalized
+     *
+     * EXAMPLE: Vote on rebalancing proposal
+     * - User has 5,000 URIP tokens = 5,000 voting power
+     * - Votes "for" the rebalancing proposal
+     * - Vote is recorded and counted toward majority
+     */
     function castVote(
         uint256 proposalId,
-        uint8 support,
+        bool support,
         string memory reason
-    ) external override whenNotPaused {
-        require(support <= 2, "Invalid vote type");
+    ) external whenNotPaused {
+        require(proposalId <= proposalCount, "Invalid proposal ID");
 
-        Proposal storage proposal = proposals[proposalId];
+        RebalancingProposal storage proposal = proposals[proposalId];
         require(
-            proposal.status == ProposalStatus.ACTIVE,
+            proposal.status == ProposalStatus.Active,
             "Proposal not active"
         );
         require(block.timestamp <= proposal.endTime, "Voting period ended");
         require(!proposal.hasVoted[msg.sender], "Already voted");
 
-        address voter = msg.sender;
-        uint256 weight = getVotingPower(voter);
-        require(weight > 0, "No voting power");
+        // Calculate voting power (own tokens + delegated votes)
+        uint256 votingPower = _getVotingPower(msg.sender);
+        require(votingPower > 0, "No voting power");
 
-        proposal.hasVoted[voter] = true;
-        proposal.votes[voter] = support;
+        // Record vote
+        proposal.hasVoted[msg.sender] = true;
+        proposal.voteChoice[msg.sender] = support;
 
-        if (support == 0) {
-            proposal.againstVotes += weight;
-        } else if (support == 1) {
-            proposal.forVotes += weight;
+        if (support) {
+            proposal.forVotes += votingPower;
         } else {
-            proposal.abstainVotes += weight;
+            proposal.againstVotes += votingPower;
         }
 
-        emit VoteCast(proposalId, voter, support, weight, reason);
+        emit VoteCast(proposalId, msg.sender, support, votingPower, reason);
 
-        // Check if proposal can be finalized early
-        _checkEarlyFinalization(proposalId);
+        // Check if proposal should be finalized early (if total supply has voted)
+        uint256 totalVotes = proposal.forVotes + proposal.againstVotes;
+        if (totalVotes >= proposal.totalVotingPower) {
+            _finalizeProposal(proposalId);
+        }
+    }
+
+    /**
+     * @dev Get voting power for an address (own balance + delegated votes)
+     * @param account Address to check voting power for
+     * @return votingPower Total voting power amount for the address
+     */
+    function _getVotingPower(address account) internal view returns (uint256) {
+        uint256 balance = uripToken.balanceOf(account);
+        uint256 delegated = delegatedVotes[account];
+        return balance + delegated;
+    }
+
+    /**
+     * @dev Finalize a proposal after voting period ends
+     * @param proposalId ID of the proposal to finalize
+     *
+     * PURPOSE: Determine if proposal passed or failed
+     * CALLED BY: Anyone after voting period ends, or automatically
+     * FLOW:
+     * 1. Check if voting period has ended
+     * 2. Calculate vote percentages
+     * 3. Check if quorum was met (if required)
+     * 4. Determine if majority voted for
+     * 5. Set status to Succeeded or Defeated
+     */
+    function finalizeProposal(uint256 proposalId) external {
+        require(proposalId <= proposalCount, "Invalid proposal ID");
+
+        RebalancingProposal storage proposal = proposals[proposalId];
+        require(
+            proposal.status == ProposalStatus.Active,
+            "Proposal not active"
+        );
+        require(block.timestamp > proposal.endTime, "Voting period not ended");
+
+        _finalizeProposal(proposalId);
+    }
+
+    /**
+     * @dev Internal function to finalize proposal
+     */
+    function _finalizeProposal(uint256 proposalId) internal {
+        RebalancingProposal storage proposal = proposals[proposalId];
+
+        uint256 totalVotes = proposal.forVotes + proposal.againstVotes;
+        ProposalStatus oldStatus = proposal.status;
+
+        // Check quorum if required
+        if (settings.requireQuorum) {
+            uint256 requiredQuorum = (proposal.totalVotingPower *
+                settings.quorumPercentage) / 10000;
+            if (totalVotes < requiredQuorum) {
+                proposal.status = ProposalStatus.Defeated;
+                emit ProposalStatusChanged(
+                    proposalId,
+                    oldStatus,
+                    ProposalStatus.Defeated
+                );
+                return;
+            }
+        }
+
+        // Check if majority voted for
+        if (proposal.forVotes > proposal.againstVotes) {
+            proposal.status = ProposalStatus.Succeeded;
+            emit ProposalStatusChanged(
+                proposalId,
+                oldStatus,
+                ProposalStatus.Succeeded
+            );
+        } else {
+            proposal.status = ProposalStatus.Defeated;
+            emit ProposalStatusChanged(
+                proposalId,
+                oldStatus,
+                ProposalStatus.Defeated
+            );
+        }
     }
 
     // ============================================================================
     // PROPOSAL EXECUTION
     // ============================================================================
 
-    function executeProposal(uint256 proposalId) external payable nonReentrant {
-        Proposal storage proposal = proposals[proposalId];
+    /**
+     * @dev Execute a successful proposal after timelock period
+     * @param proposalId ID of the proposal to execute
+     *
+     * PURPOSE: Apply approved rebalancing to the URIP fund
+     * CALLED BY: Anyone after timelock period ends
+     * FLOW:
+     * 1. Check proposal succeeded and timelock period passed
+     * 2. Apply new asset allocations to URIP fund
+     * 3. Mark proposal as executed
+     * 4. Fund is now rebalanced according to community vote
+     *
+     * EXAMPLE: Execute approved 60/40 AAPL/NVDA rebalancing
+     * - Proposal passed with 65% support
+     * - Timelock period (2 days) has passed
+     * - Execute → URIP fund now has 60% AAPL, 40% NVDA
+     */
+    function executeProposal(uint256 proposalId) external nonReentrant {
+        require(proposalId <= proposalCount, "Invalid proposal ID");
 
+        RebalancingProposal storage proposal = proposals[proposalId];
         require(
-            proposal.status == ProposalStatus.SUCCEEDED,
+            proposal.status == ProposalStatus.Succeeded,
             "Proposal not succeeded"
         );
         require(
             block.timestamp >= proposal.executionTime,
-            "Execution delay not met"
-        );
-        require(
-            hasRole(TIMELOCK_ROLE, msg.sender) ||
-                authorizedExecutors[msg.sender],
-            "Not authorized to execute"
+            "Timelock period not ended"
         );
 
-        proposal.status = ProposalStatus.EXECUTED;
-
-        for (uint256 i = 0; i < proposal.targets.length; i++) {
-            (bool success, ) = proposal.targets[i].call{
-                value: proposal.values[i]
-            }(proposal.calldatas[i]);
-            require(success, "Execution failed");
+        // Apply new allocations to URIP fund
+        for (uint256 i = 0; i < proposal.assetTokens.length; i++) {
+            uripToken.setAssetAllocation(
+                proposal.assetTokens[i],
+                proposal.newAllocations[i]
+            );
         }
 
-        emit ProposalExecuted(proposalId);
-    }
+        // Mark as executed
+        ProposalStatus oldStatus = proposal.status;
+        proposal.status = ProposalStatus.Executed;
 
-    function _checkEarlyFinalization(uint256 proposalId) internal {
-        Proposal storage proposal = proposals[proposalId];
-        ProposalConfig memory config = proposalConfigs[proposal.category];
-
-        uint256 totalVotes = proposal.forVotes +
-            proposal.againstVotes +
-            proposal.abstainVotes;
-        uint256 totalSupply = governanceToken.totalSupply();
-        uint256 quorumRequired = (totalSupply * config.quorumPercentage) /
-            BASIS_POINTS;
-
-        if (totalVotes >= quorumRequired) {
-            if (block.timestamp >= proposal.endTime) {
-                _finalizeProposal(proposalId);
-            }
-        }
-    }
-
-    function finalizeProposal(uint256 proposalId) external {
-        Proposal storage proposal = proposals[proposalId];
-        require(
-            proposal.status == ProposalStatus.ACTIVE,
-            "Proposal not active"
+        emit ProposalStatusChanged(
+            proposalId,
+            oldStatus,
+            ProposalStatus.Executed
         );
-        require(block.timestamp >= proposal.endTime, "Voting period not ended");
-
-        _finalizeProposal(proposalId);
-    }
-
-    function _finalizeProposal(uint256 proposalId) internal {
-        Proposal storage proposal = proposals[proposalId];
-        ProposalConfig memory config = proposalConfigs[proposal.category];
-
-        uint256 totalVotes = proposal.forVotes +
-            proposal.againstVotes +
-            proposal.abstainVotes;
-        uint256 totalSupply = governanceToken.totalSupply();
-        uint256 quorumRequired = (totalSupply * config.quorumPercentage) /
-            BASIS_POINTS;
-
-        if (totalVotes >= quorumRequired) {
-            uint256 approvalRequired = (totalVotes * config.approvalThreshold) /
-                BASIS_POINTS;
-            proposal.status = proposal.forVotes >= approvalRequired
-                ? ProposalStatus.SUCCEEDED
-                : ProposalStatus.DEFEATED;
-        } else {
-            proposal.status = ProposalStatus.DEFEATED;
-        }
+        emit ProposalExecuted(proposalId, msg.sender);
     }
 
     // ============================================================================
-    // VOTING POWER MANAGEMENT
+    // VOTE DELEGATION (OPTIONAL FEATURE)
     // ============================================================================
 
-    function getVotingPower(
-        address account
-    ) public view override returns (uint256) {
-        uint256 balance = governanceToken.balanceOf(account);
-        uint256 delegated = votingPowers[account].delegatedFrom;
-
-        // If user has delegated their power, they can't vote with their own balance
-        if (votingPowers[account].delegatedTo != address(0)) {
-            return delegated;
-        }
-
-        return balance + delegated;
-    }
-
+    /**
+     * @dev Delegate voting power to another address
+     * @param delegatee Address to delegate votes to
+     *
+     * PURPOSE: Allow passive investors to delegate voting to active participants
+     * CALLED BY: URIP holders who want others to vote on their behalf
+     * FLOW: User delegates → Delegatee can vote with combined power → More participation
+     */
     function delegate(address delegatee) external {
-        address currentDelegate = votingPowers[msg.sender].delegatedTo;
-        uint256 voterBalance = governanceToken.balanceOf(msg.sender);
+        require(delegatee != msg.sender, "Cannot delegate to self");
+        require(delegatee != address(0), "Cannot delegate to zero address");
+
+        address currentDelegate = delegates[msg.sender];
+        uint256 delegatorBalance = uripToken.balanceOf(msg.sender);
 
         // Remove previous delegation
         if (currentDelegate != address(0)) {
-            votingPowers[currentDelegate].delegatedFrom -= voterBalance;
+            delegatedVotes[currentDelegate] -= delegatorBalance;
         }
 
-        // Add new delegation
-        if (delegatee != address(0)) {
-            votingPowers[delegatee].delegatedFrom += voterBalance;
-        }
+        // Set new delegation
+        delegates[msg.sender] = delegatee;
+        delegatedVotes[delegatee] += delegatorBalance;
 
-        votingPowers[msg.sender].delegatedTo = delegatee;
-
-        emit VotingPowerDelegated(msg.sender, delegatee, voterBalance);
+        emit VoteDelegated(msg.sender, delegatee, delegatorBalance);
     }
 
-    // ============================================================================
-    // EMERGENCY FUNCTIONS
-    // ============================================================================
+    /**
+     * @dev Remove vote delegation
+     *
+     * PURPOSE: Allow users to take back their voting power
+     */
+    function removeDelegation() external {
+        address currentDelegate = delegates[msg.sender];
+        require(currentDelegate != address(0), "No delegation to remove");
 
-    function emergencyCancelProposal(
-        uint256 proposalId
-    ) external onlyRole(EMERGENCY_ROLE) {
-        Proposal storage proposal = proposals[proposalId];
-        require(
-            proposal.status == ProposalStatus.ACTIVE ||
-                proposal.status == ProposalStatus.SUCCEEDED,
-            "Cannot cancel proposal"
-        );
+        uint256 delegatorBalance = uripToken.balanceOf(msg.sender);
+        delegatedVotes[currentDelegate] -= delegatorBalance;
+        delegates[msg.sender] = address(0);
 
-        proposal.status = ProposalStatus.CANCELLED;
-        emit ProposalCancelled(proposalId);
-    }
-
-    function emergencyPause() external onlyRole(EMERGENCY_ROLE) {
-        _pause();
-    }
-
-    function emergencyUnpause() external onlyRole(EMERGENCY_ROLE) {
-        _unpause();
+        emit VoteDelegated(msg.sender, address(0), 0);
     }
 
     // ============================================================================
     // VIEW FUNCTIONS
     // ============================================================================
 
-    function getProposalState(
+    /**
+     * @dev Get complete proposal information
+     * @param proposalId ID of the proposal
+     * @return id Proposal ID
+     * @return title Proposal title
+     * @return description Proposal description
+     * @return proposer Address of proposal creator
+     * @return startTime When voting started
+     * @return endTime When voting ends
+     * @return executionTime When execution is allowed
+     * @return assetTokens Array of asset token addresses
+     * @return newAllocations Array of proposed allocations
+     * @return forVotes Number of votes in favor
+     * @return againstVotes Number of votes against
+     * @return totalVotingPower Total voting power when created
+     * @return status Current proposal status
+     */
+    function getProposal(
         uint256 proposalId
-    ) external view returns (ProposalStatus) {
-        Proposal storage proposal = proposals[proposalId];
+    )
+        external
+        view
+        returns (
+            uint256 id,
+            string memory title,
+            string memory description,
+            address proposer,
+            uint256 startTime,
+            uint256 endTime,
+            uint256 executionTime,
+            address[] memory assetTokens,
+            uint256[] memory newAllocations,
+            uint256 forVotes,
+            uint256 againstVotes,
+            uint256 totalVotingPower,
+            ProposalStatus status
+        )
+    {
+        require(proposalId <= proposalCount, "Invalid proposal ID");
+        RebalancingProposal storage proposal = proposals[proposalId];
 
-        if (proposal.status != ProposalStatus.ACTIVE) {
-            return proposal.status;
-        }
-
-        if (block.timestamp > proposal.endTime + 30 days) {
-            return ProposalStatus.EXPIRED;
-        }
-
-        if (block.timestamp <= proposal.endTime) {
-            return ProposalStatus.ACTIVE;
-        }
-
-        // Proposal has ended, check if it succeeded
-        ProposalConfig memory config = proposalConfigs[proposal.category];
-        uint256 totalVotes = proposal.forVotes +
-            proposal.againstVotes +
-            proposal.abstainVotes;
-        uint256 totalSupply = governanceToken.totalSupply();
-        uint256 quorumRequired = (totalSupply * config.quorumPercentage) /
-            BASIS_POINTS;
-
-        if (totalVotes >= quorumRequired) {
-            uint256 approvalRequired = (totalVotes * config.approvalThreshold) /
-                BASIS_POINTS;
-            return
-                proposal.forVotes >= approvalRequired
-                    ? ProposalStatus.SUCCEEDED
-                    : ProposalStatus.DEFEATED;
-        }
-
-        return ProposalStatus.DEFEATED;
-    }
-
-    function hasVoted(
-        uint256 proposalId,
-        address account
-    ) external view returns (bool) {
-        return proposals[proposalId].hasVoted[account];
-    }
-
-    function getVote(
-        uint256 proposalId,
-        address account
-    ) external view returns (uint8) {
-        require(
-            proposals[proposalId].hasVoted[account],
-            "Account has not voted"
+        return (
+            proposal.id,
+            proposal.title,
+            proposal.description,
+            proposal.proposer,
+            proposal.startTime,
+            proposal.endTime,
+            proposal.executionTime,
+            proposal.assetTokens,
+            proposal.newAllocations,
+            proposal.forVotes,
+            proposal.againstVotes,
+            proposal.totalVotingPower,
+            proposal.status
         );
-        return proposals[proposalId].votes[account];
     }
 
-    // ============================================================================
-    // ADMIN FUNCTIONS
-    // ============================================================================
+    /**
+     * @dev Check if an address has voted on a proposal
+     * @param proposalId ID of the proposal
+     * @param voter Address to check
+     * @return hasVoted Whether the address has voted
+     * @return voteChoice Their vote choice (if voted)
+     */
+    function getVoteStatus(
+        uint256 proposalId,
+        address voter
+    ) external view returns (bool hasVoted, bool voteChoice) {
+        require(proposalId <= proposalCount, "Invalid proposal ID");
+        RebalancingProposal storage proposal = proposals[proposalId];
 
-    function updateProposalConfig(
-        ProposalCategory category,
-        uint256 quorumPercentage,
-        uint256 approvalThreshold,
-        uint256 votingPeriod,
-        uint256 executionDelay,
-        uint256 proposalThreshold
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(quorumPercentage <= BASIS_POINTS, "Invalid quorum");
-        require(approvalThreshold <= BASIS_POINTS, "Invalid threshold");
-
-        proposalConfigs[category] = ProposalConfig({
-            quorumPercentage: quorumPercentage,
-            approvalThreshold: approvalThreshold,
-            votingPeriod: votingPeriod,
-            executionDelay: executionDelay,
-            proposalThreshold: proposalThreshold
-        });
-
-        emit ProposalConfigUpdated(category);
+        return (proposal.hasVoted[voter], proposal.voteChoice[voter]);
     }
 
-    function setAuthorizedExecutor(
-        address executor,
-        bool authorized
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        authorizedExecutors[executor] = authorized;
+    /**
+     * @dev Get voting power for an address
+     * @param account Address to check
+     * @return votingPower Current voting power
+     */
+    function getVotingPower(address account) external view returns (uint256) {
+        return _getVotingPower(account);
     }
 
-    function updateTreasuryAddress(
-        address newTreasury
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newTreasury != address(0), "Invalid treasury address");
-        treasuryAddress = newTreasury;
-    }
-
-    function addAdvisoryBoardMember(
-        address member
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(!advisoryBoard[member], "Already advisory board member");
-        advisoryBoard[member] = true;
-        advisoryBoardSize++;
-        emit AdvisoryBoardUpdated(member, true);
-    }
-
-    function removeAdvisoryBoardMember(
-        address member
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(advisoryBoard[member], "Not advisory board member");
-        advisoryBoard[member] = false;
-        advisoryBoardSize--;
-        emit AdvisoryBoardUpdated(member, false);
-    }
-
-    // ============================================================================
-    // UTILITY FUNCTIONS
-    // ============================================================================
-
-    function _toString(uint256 value) internal pure returns (string memory) {
-        if (value == 0) {
-            return "0";
-        }
-        uint256 temp = value;
-        uint256 digits;
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
-        }
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits -= 1;
-            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
-            value /= 10;
-        }
-        return string(buffer);
-    }
-}
-
-/**
- * @title URIPGovernanceHelper
- * @dev Helper contract for common governance operations
- */
-contract URIPGovernanceHelper {
-    URIPDAOGovernance public immutable governance;
-
-    constructor(address _governance) {
-        governance = URIPDAOGovernance(_governance);
+    /**
+     * @dev Get current URIP fund allocations for comparison
+     * @return assetTokens Current asset addresses in the fund
+     * @return currentAllocations Current allocation percentages (basis points)
+     */
+    function getCurrentAllocations()
+        external
+        view
+        returns (
+            address[] memory assetTokens,
+            uint256[] memory currentAllocations
+        )
+    {
+        return uripToken.getAllAssetAllocations();
     }
 
     /**
      * @dev Get all active proposals
+     * @return activeProposalIds Array of proposal IDs that are currently active for voting
      */
     function getActiveProposals() external view returns (uint256[] memory) {
-        uint256 proposalCount = governance.proposalCount();
         uint256[] memory activeProposals = new uint256[](proposalCount);
         uint256 activeCount = 0;
 
         for (uint256 i = 1; i <= proposalCount; i++) {
-            if (
-                governance.getProposalState(i) ==
-                URIPDAOGovernance.ProposalStatus.ACTIVE
-            ) {
+            if (proposals[i].status == ProposalStatus.Active) {
                 activeProposals[activeCount] = i;
                 activeCount++;
             }
@@ -687,122 +660,76 @@ contract URIPGovernanceHelper {
         return result;
     }
 
+    // ============================================================================
+    // ADMIN FUNCTIONS
+    // ============================================================================
+
     /**
-     * @dev Batch vote on multiple proposals
+     * @dev Update governance settings
+     * @param newSettings New governance settings
+     *
+     * PURPOSE: Allow admin to adjust governance parameters
      */
-    function batchVote(
-        uint256[] memory proposalIds,
-        uint8[] memory support,
-        string[] memory reasons
-    ) external {
-        require(proposalIds.length == support.length, "Array length mismatch");
-        require(proposalIds.length == reasons.length, "Array length mismatch");
+    function updateGovernanceSettings(
+        GovernanceSettings memory newSettings
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(
+            newSettings.proposalThreshold > 0,
+            "Invalid proposal threshold"
+        );
+        require(newSettings.votingPeriod >= 1 days, "Voting period too short");
+        require(
+            newSettings.timelockPeriod >= 1 days,
+            "Timelock period too short"
+        );
+        require(
+            newSettings.quorumPercentage <= 10000,
+            "Invalid quorum percentage"
+        );
 
-        for (uint256 i = 0; i < proposalIds.length; i++) {
-            governance.castVote(proposalIds[i], support[i], reasons[i]);
-        }
-    }
-}
-
-/**
- * @title URIPTreasuryManager
- * @dev Manages protocol treasury funds with governance oversight
- */
-contract URIPTreasuryManager is AccessControl, ReentrancyGuard {
-    bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");
-    bytes32 public constant TREASURER_ROLE = keccak256("TREASURER_ROLE");
-
-    IURIPDAOGovernance public immutable governance;
-
-    // Treasury allocations
-    mapping(address => uint256) public allocatedFunds; // token => amount
-    mapping(address => uint256) public spentFunds; // token => spent amount
-
-    // Budget categories
-    enum BudgetCategory {
-        DEVELOPMENT,
-        MARKETING,
-        OPERATIONS,
-        PARTNERSHIPS,
-        RESEARCH,
-        EMERGENCY_RESERVE
+        settings = newSettings;
+        emit GovernanceSettingsUpdated(newSettings);
     }
 
-    struct BudgetAllocation {
-        uint256 amount;
-        uint256 spent;
-        uint256 period; // Budget period in seconds
-        uint256 lastReset; // Last budget reset timestamp
-        bool active;
+    /**
+     * @dev Emergency cancel a proposal
+     * @param proposalId ID of the proposal to cancel
+     *
+     * PURPOSE: Cancel proposal in emergency situations
+     */
+    function emergencyCancelProposal(
+        uint256 proposalId
+    ) external onlyRole(EMERGENCY_ROLE) {
+        require(proposalId <= proposalCount, "Invalid proposal ID");
+
+        RebalancingProposal storage proposal = proposals[proposalId];
+        require(
+            proposal.status == ProposalStatus.Active ||
+                proposal.status == ProposalStatus.Succeeded,
+            "Cannot cancel proposal"
+        );
+
+        ProposalStatus oldStatus = proposal.status;
+        proposal.status = ProposalStatus.Cancelled;
+
+        emit ProposalStatusChanged(
+            proposalId,
+            oldStatus,
+            ProposalStatus.Cancelled
+        );
     }
 
-    mapping(BudgetCategory => mapping(address => BudgetAllocation))
-        public budgets;
-
-    event FundsAllocated(
-        address indexed token,
-        uint256 amount,
-        BudgetCategory category
-    );
-    event FundsSpent(
-        address indexed token,
-        uint256 amount,
-        BudgetCategory category
-    );
-    event BudgetReset(BudgetCategory category, address indexed token);
-
-    constructor(address _governance) {
-        governance = IURIPDAOGovernance(_governance);
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(TREASURER_ROLE, msg.sender);
+    /**
+     * @dev Pause governance in emergency
+     */
+    function pause() external onlyRole(EMERGENCY_ROLE) {
+        _pause();
     }
 
-    function allocateFunds(
-        address token,
-        uint256 amount,
-        BudgetCategory category
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        allocatedFunds[token] += amount;
-
-        BudgetAllocation storage budget = budgets[category][token];
-        budget.amount += amount;
-        budget.active = true;
-
-        if (budget.lastReset == 0) {
-            budget.lastReset = block.timestamp;
-            budget.period = 30 days; // Default 30-day budget period
-        }
-
-        emit FundsAllocated(token, amount, category);
-    }
-
-    function spendFunds(
-        address token,
-        uint256 amount,
-        BudgetCategory category,
-        address recipient
-    ) external onlyRole(TREASURER_ROLE) nonReentrant {
-        BudgetAllocation storage budget = budgets[category][token];
-        require(budget.active, "Budget not active");
-        require(budget.amount >= budget.spent + amount, "Insufficient budget");
-
-        budget.spent += amount;
-        spentFunds[token] += amount;
-
-        // Transfer funds (assumes ERC20 token)
-        IERC20(token).transfer(recipient, amount);
-
-        emit FundsSpent(token, amount, category);
-    }
-
-    function resetBudget(
-        BudgetCategory category,
-        address token
-    ) external onlyRole(GOVERNANCE_ROLE) {
-        BudgetAllocation storage budget = budgets[category][token];
-        budget.spent = 0;
-        budget.lastReset = block.timestamp;
-
-        emit BudgetReset(category, token);
+    /**
+     * @dev Unpause governance
+     */
+    function unpause() external onlyRole(EMERGENCY_ROLE) {
+        _unpause();
     }
 }
