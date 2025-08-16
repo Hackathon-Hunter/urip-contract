@@ -8,35 +8,47 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 // Interface imports for interacting with AssetToken and URIPToken
 interface IAssetToken {
+    struct AssetInfo {
+        string symbol;
+        string assetType;
+        uint256 currentPrice;
+        uint256 lastUpdate;
+        bool isActive;
+    }
+
     function mint(address to, uint256 amount) external;
+
     function burn(address from, uint256 amount) external;
+
     function getCurrentPrice() external view returns (uint256, uint256);
+
     function getTokenAmount(uint256 usdAmount) external view returns (uint256);
+
     function getUSDValue(uint256 tokenAmount) external view returns (uint256);
-    function getAssetInfo()
-        external
-        view
-        returns (
-            string memory symbol,
-            string memory assetType,
-            uint256 currentPrice,
-            uint256 lastUpdate,
-            bool isActive
-        );
+
+    function getAssetInfo() external view returns (AssetInfo memory);
+
     function balanceOf(address account) external view returns (uint256);
+
     function name() external view returns (string memory);
+
     function symbol() external view returns (string memory);
 }
 
 interface IURIPToken {
     function purchaseFund(address to, uint256 usdAmount) external;
+
     function redeemFund(
         address from,
         uint256 tokenAmount
     ) external returns (uint256);
+
     function getTokenAmount(uint256 usdAmount) external view returns (uint256);
+
     function getUSDValue(uint256 tokenAmount) external view returns (uint256);
+
     function getCurrentNAV() external view returns (uint256, uint256);
+
     function getFundStats()
         external
         view
@@ -48,12 +60,16 @@ interface IURIPToken {
             uint256 assetCount,
             bool isActive
         );
+
     function getAllAssetAllocations()
         external
         view
         returns (address[] memory assets, uint256[] memory allocations);
+
     function balanceOf(address account) external view returns (uint256);
+
     function name() external view returns (string memory);
+
     function symbol() external view returns (string memory);
 }
 
@@ -713,7 +729,7 @@ contract PurchaseManager is AccessControl, Pausable, ReentrancyGuard {
                     symbols[index] = "???";
                 }
 
-                // Get current price
+                // Get price data
                 try IAssetToken(token).getCurrentPrice() returns (
                     uint256 price,
                     uint256 timestamp
@@ -725,15 +741,16 @@ contract PurchaseManager is AccessControl, Pausable, ReentrancyGuard {
                     lastUpdated[index] = 0;
                 }
 
-                // Get asset type
+                // FIXED: Get asset info using struct return
                 try IAssetToken(token).getAssetInfo() returns (
-                    string memory,
-                    string memory assetType,
-                    uint256,
-                    uint256,
-                    bool
+                    IAssetToken.AssetInfo memory info
                 ) {
-                    assetTypes[index] = assetType;
+                    assetTypes[index] = info.assetType;
+                    // Use price from AssetInfo if getCurrentPrice failed
+                    if (prices[index] == 0) {
+                        prices[index] = info.currentPrice;
+                        lastUpdated[index] = info.lastUpdate;
+                    }
                 } catch {
                     assetTypes[index] = "UNKNOWN";
                 }
@@ -980,17 +997,16 @@ contract PurchaseManager is AccessControl, Pausable, ReentrancyGuard {
             lastUpdate = 0;
         }
 
-        // Get asset info
         try IAssetToken(assetToken).getAssetInfo() returns (
-            string memory _assetSymbol,
-            string memory _assetType,
-            uint256,
-            uint256,
-            bool _isActive
+            IAssetToken.AssetInfo memory info
         ) {
-            assetSymbol = _assetSymbol;
-            assetType = _assetType;
-            isActive = _isActive;
+            assetSymbol = info.symbol;
+            assetType = info.assetType;
+            isActive = info.isActive;
+            if (currentPrice == 0) {
+                currentPrice = info.currentPrice;
+                lastUpdate = info.lastUpdate;
+            }
         } catch {
             assetSymbol = "???";
             assetType = "UNKNOWN";
@@ -1491,6 +1507,8 @@ contract PurchaseManager is AccessControl, Pausable, ReentrancyGuard {
 // Extended ERC20 interface for token info
 interface IERC20Extended {
     function name() external view returns (string memory);
+
     function symbol() external view returns (string memory);
+
     function decimals() external view returns (uint8);
 }
