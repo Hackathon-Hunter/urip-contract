@@ -19,10 +19,6 @@ via_ir = true
 lisk_sepolia = "https://rpc.sepolia-api.lisk.com"
 local = "http://localhost:8545"
 
-# Etherscan configuration (simplified)
-[etherscan]
-lisk_sepolia = { key = "${ETHERSCAN_API_KEY}" }
-
 # Test profile
 [profile.test]
 verbosity = 2
