@@ -1,0 +1,17 @@
+{
+  "network": "sepolia",
+  "chainId": "11155111",
+  "timestamp": "2025-08-18T23:24:13+07:00",
+  "rpcUrl": "https://rpc.sepolia-api.lisk.com",
+  "explorer": "https://sepolia-blockscout.lisk.com",
+  "contracts": {
+    "uripToken": "Check deployment logs"
+  },
+  "configuration": {
+    "name": "URIP Simple Fund",
+    "symbol": "URIP",
+    "initialNAV": ".00",
+    "managementFee": "2%",
+    "minter": "0x237B654Dc3C8b01ced3eC3303b0251dfb1ED1453"
+  }
+}
